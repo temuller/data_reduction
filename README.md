@@ -3,7 +3,7 @@
 
 ## PypeIt
 
-For general data reduction, [PypeIt](https://pypeit.readthedocs.io/en/release/index.html) is probably a good option.
+For general data reduction of spectra, [PypeIt](https://pypeit.readthedocs.io/en/release/index.html) is probably a good option.
 
 ### Installation
 
@@ -77,18 +77,16 @@ You can run one (e.g. `A`) or more configurations (e.g. `all`):
 pypeit_setup -r path_to_your_raw_data/ -s <spectrograph> -c all
 ```
 
+This last step creates a reduction file (with a `.pypeit` extension).
+
 #### 4. Run the reduction
 
 The main script to run the PypeIt reduction is `run_pypeit`:
 
 ```code
-run_pypeit path_to_your_reduction_file/<spectrograph>_>setup>.pypeit -o
+run_pypeit path_to_your_reduction_file/<spectrograph>_<setup>.pypeit -o
 ```
 
 ## Custom Codes
 
-There are also custom codes one can use.
-
-### INT - IDS
-
-I found a code in [this repo](https://github.com/aayush3009/INT-IDS-DataReduction).
+There are also custom codes one can use. The [GROWTH school github repository](https://github.com/growth-astro/growth-school-2020) nicely explains the entire reduction process for images and spectra. I also found a code in [this repo](https://github.com/aayush3009/INT-IDS-DataReduction) for (long-slit) spectra reduction.
