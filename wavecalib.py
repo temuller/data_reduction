@@ -1,3 +1,5 @@
+# ING-IDS lamps: https://www.ing.iac.es/astronomy/instruments/ids/wavelength_calibration.html
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -15,8 +17,8 @@ import corner
 def gaussian(x, *params):
     """Simple Gaussian function for fitting.
     """
-    amp, x0, sigma = params
-    return amp * np.exp(-(x - x0)**2 / 2 / sigma**2)
+    amp, x0, sigma, offset = params
+    return amp * np.exp(-(x - x0)**2 / 2 / sigma**2) + offset
 
 
 def fit_gauss2peaks(arc_disp, arc_profile, peak_ids, plot_diag=False):
@@ -40,26 +42,31 @@ def fit_gauss2peaks(arc_disp, arc_profile, peak_ids, plot_diag=False):
     sigmas: array
         Standard deviations of the peaks/spectral lines.
     """
-    amplitudes, centers, sigmas = [], [], []
+    amplitudes, centers, sigmas, offsets = [], [], [], []
     sigma = 1.0  # initial guess
+    offset = 0.0
     width = 4  # width of the lines to fit
     for i in peak_ids:
-        center = arc_disp[i]
-        amplitude = arc_profile[i]
+        center0 = arc_disp[i]
+        amplitude0 = arc_profile[i]
 
-        guess = (amplitude, center, sigma)
-        bounds = ((0, center - 2, 0), (np.inf, center + 2, np.inf))
+        guess = (amplitude0, center0, sigma, offset)
+        bounds = ((0, center0 - 2, 0, -np.inf),
+                  (np.inf, center0 + 2, np.inf, np.inf))
 
         # indices to bound the profile of each line
-        i_min = int(center - width)
-        i_max = int(center + width)
+        i_min = int(center0 - width)
+        i_max = int(center0 + width)
 
         try:
             popt, pcov = curve_fit(gaussian,
                                    arc_disp[i_min:i_max],
                                    arc_profile[i_min:i_max],
                                    p0=guess, bounds=bounds)
-            amp, center, sigma = popt
+            amp, center, sigma, offset = popt
+
+            if np.abs(center-center0)>2:
+                center = np.inf
 
             if plot_diag:
                 # diagnostic plot with the fit result
@@ -81,18 +88,21 @@ def fit_gauss2peaks(arc_disp, arc_profile, peak_ids, plot_diag=False):
         amplitudes.append(amp)
         centers.append(center)
         sigmas.append(sigma)
+        offsets.append(offset)
 
     amplitudes = np.array(amplitudes)
     centers = np.array(centers)
     sigmas = np.array(sigmas)
+    offsets = np.array(offsets)
 
     # filter lamp_lines to keep only lines that were fit
     fit_mask = np.isfinite(centers)
     amplitudes = amplitudes[fit_mask]
     centers = centers[fit_mask]
     sigmas = sigmas[fit_mask]
+    offsets = offsets[fit_mask]  # not needed
 
-    return amplitudes, centers, sigmas
+    return amplitudes, centers, sigmas, offsets
 
 
 def find_arc_peaks(data, plot_solution=False, plot_diag=False):
@@ -128,19 +138,20 @@ def find_arc_peaks(data, plot_solution=False, plot_diag=False):
     peak_ids = find_peaks(arc_profile, prominence=prominence)[0]
 
     # peak estimation with gaussian fitting
-    arc_peaks, arc_pixels, arc_sigmas = fit_gauss2peaks(arc_disp, arc_profile, peak_ids, plot_diag)
+    arc_peaks, arc_pixels, arc_sigmas, offsets = fit_gauss2peaks(arc_disp, arc_profile, peak_ids, plot_diag)
 
     # saturation mask / maximum line intensity
     sat_mask = arc_peaks < 64000
     arc_pixels = arc_pixels[sat_mask]
     arc_peaks = arc_peaks[sat_mask]
+    offsets = offsets[sat_mask]
 
     if plot_solution:
         fig, ax = plt.subplots(figsize=(12, 4))
 
         ax.plot(arc_profile)
         ax.scatter(arc_disp[peak_ids], arc_profile[peak_ids], marker='*', color='g', label='Initial Peaks')
-        ax.scatter(arc_pixels, arc_peaks, marker='*', color='r', label='Optimised Peaks (Gaussian Fit)')
+        ax.scatter(arc_pixels, arc_peaks+offsets, marker='*', color='r', label='Optimised Peaks (Gaussian Fit)')
 
         ax.set_ylabel('Intensity', fontsize=16)
         ax.set_xlabel('Dispersion axis (pixels)', fontsize=16)
@@ -224,7 +235,7 @@ def wavelength_function(params, x, model='legendre'):
     
 # Quick solution
 
-def chi_sq(params, arc_pixels, lamp_wave, model='legendre'):
+def chi_sq(params, arc_pixels, lamp_wave, sigmas=None, model='legendre'):
     """Chi squared for the wavelength solution.
 
     Parameters
@@ -247,13 +258,17 @@ def chi_sq(params, arc_pixels, lamp_wave, model='legendre'):
     M, N = len(lamp_wave[ids_lamp]), len(params)
     residual = model_wave[ids_model] - lamp_wave[ids_lamp]
 
+    if sigmas is None:
+        sigmas = np.ones_like(residual)
+    std = sigmas[ids_model]
+
     # reduced chi square
-    chi = np.sum(residual ** 2) / (M - N)
+    chi = np.sum(residual ** 2 / std**2) / (M - N)
 
     return chi
 
 
-def quick_wavelength_solution(arc_pixels, lamp_wave, params=None, model='legendre', k=3, niter=3, plot_solution=False,
+def quick_wavelength_solution(arc_pixels, lamp_wave, params=None, sigmas=None, model='legendre', k=3, niter=3, sigclip=2.5, plot_solution=False,
                               data=None):
     """Finds a wavelength solution with a simple fit.
 
@@ -280,17 +295,17 @@ def quick_wavelength_solution(arc_pixels, lamp_wave, params=None, model='legendr
         Parameters for the wavelength-solution function.
     """
     if params is None:
-        params = [4000] + (k - 1) * [0]
+        params = [4000] + k * [0]
 
     arc_pixels0 = np.copy(arc_pixels)
-    if arc_sigmas is None:
-        arc_sigmas0 = None
+    if sigmas is not None:
+        sigmas0 = np.copy(sigmas)
     else:
-        arc_sigmas0 = np.copy(arc_sigmas)
+        sigmas0 = None
 
     if niter > 0:
         for i in range(niter):
-            results = minimize(chi_sq, params, args=(arc_pixels0, lamp_wave, model), method='Powell')
+            results = minimize(chi_sq, params, args=(arc_pixels0, lamp_wave, sigmas0, model), method='Powell')
             params = results.x
 
             calibrated_wave = wavelength_function(params, arc_pixels0, model)
@@ -299,12 +314,12 @@ def quick_wavelength_solution(arc_pixels, lamp_wave, params=None, model='legendr
             residuals = calibrated_wave[ids_calwave] - lamp_wave[ids_lamp]
 
             # outliers removal
-            mask = ~sigma_clip(residuals, sigma=2.0).mask
+            mask = ~sigma_clip(residuals, sigma=sigclip).mask
             arc_pixels0 = arc_pixels0[ids_calwave][mask]
-            if arc_sigmas0 is not None:
-                arc_sigmas0 = arc_sigmas0[ids_calwave][mask]
+            if sigmas0 is not None:
+                sigmas0 = sigmas0[ids_calwave][mask]
 
-    results = minimize(chi_sq, params, args=(arc_pixels0, lamp_wave, model), method='Powell')
+    results = minimize(chi_sq, params, args=(arc_pixels0, lamp_wave, sigmas0, model), method='Powell')
     params = results.x
 
     outliers_mask = np.array([False if pixel in arc_pixels0 else True for pixel in arc_pixels])
@@ -316,54 +331,57 @@ def quick_wavelength_solution(arc_pixels, lamp_wave, params=None, model='legendr
 
 # MCMC solution
 
-def log_likelihood(params, arc_pixels, lamp_wave, arc_sigmas, model):
+def log_likelihood(params, arc_pixels, lamp_wave, sigmas, model):
     """Logarithm of the likelihood for the wavelength solution.
     """
     model_wave = wavelength_function(params, arc_pixels, model)
-    ids_lamp, ids_model = find_nearest(lamp_wave, model_wave, arc_sigmas)
-
-    M, N = len(lamp_wave[ids_lamp]), len(params)
+    ids_lamp, ids_model = find_nearest(lamp_wave, model_wave)
     residual = model_wave[ids_model] - lamp_wave[ids_lamp]
-    if arc_sigmas is None:
-        std = 1
-    else:
-        std = arc_sigmas[ids_model]
 
-    ll = -0.5 * np.sum(residual ** 2 / std ** 2) / (M - N)
+    if sigmas is None:
+        sigmas = np.ones_like(model_wave)
+    std = sigmas[ids_model]
+
+    ll = -0.5 * np.sum(residual ** 2 / std**2)
     
     return ll
 
 def log_prior(params):
     """Priors for the fitting.
     """
-    for p in params:
-        if -1e4 < p < 1e4:
+    for i, p in enumerate(params):
+        if i==0:
+            if 0 < p < 7000:
+                continue
+        elif -10 < p < 10:
             continue
         else:
             return -np.inf
     return 0.0
     
-def log_probability(params, arc_pixels, lamp_wave, arc_sigmas, model):
+def log_probability(params, arc_pixels, lamp_wave, sigmas, model):
     """Posterior function.
     """
     lp = log_prior(params)
     if not np.isfinite(lp):
         return -np.inf
-    return lp + log_likelihood(params, arc_pixels, lamp_wave, arc_sigmas, model)
+    return lp + log_likelihood(params, arc_pixels, lamp_wave, sigmas, model)
 
-def optimised_wavelength_solution(params, arc_pixels, lamp_wave, arc_sigmas=None, model='legendre'):
+def optimised_wavelength_solution(params, arc_pixels, lamp_wave, sigmas=None, model='legendre', plot_solution=False, data=None):
 
-    pos = params + 1e-4 * np.random.randn(32, len(params))
+    pos = params + 1e-2 * np.random.randn(32, len(params))
+    pos.T[0] += 1e3 * np.random.randn(32)  # the 1st parameter needs more exploring
+    pos.T[1] += 0.5 * np.abs(np.random.randn(32))
     nwalkers, ndim = pos.shape
 
     sampler = emcee.EnsembleSampler(
-        nwalkers, ndim, log_probability, args=(arc_pixels, lamp_wave, arc_sigmas, model)
+        nwalkers, ndim, log_probability, args=(arc_pixels, lamp_wave, sigmas, model)
     )
     sampler.run_mcmc(pos, 3000, progress=True)
-    flat_samples = sampler.get_chain(discard=500, thin=30, flat=True)
+    flat_samples = sampler.get_chain(discard=500, thin=50, flat=True)
     
     # plotting
-    labels = [f"p{i}" for i in range(len(params))]
+    labels = [f"c{i}" for i in range(len(params))]
     corner.corner(flat_samples, labels=labels)
     plt.show()
     
@@ -371,8 +389,10 @@ def optimised_wavelength_solution(params, arc_pixels, lamp_wave, arc_sigmas=None
     for i in range(ndim):
         mcmc = np.percentile(flat_samples[:, i], [16, 50, 84])
         params.append(mcmc[1])
-        
-    print(params)
+
+    if plot_solution:
+        mask = None  # no outliers mask for MCMC
+        check_solution(params, arc_pixels, lamp_wave, mask, data, model)
 
     return params
 
@@ -398,6 +418,7 @@ def check_solution(params, arc_pixels, lamp_wave, mask=None, data=None, model='l
     ids_lamp, ids_calwave = find_nearest(lamp_wave, calibrated_wave)
 
     residuals = calibrated_wave[ids_calwave] - lamp_wave[ids_lamp]
+    n_all = len(calibrated_wave[ids_calwave])
     mean, std = residuals.mean(), residuals.std()
 
     if data is not None:
@@ -413,7 +434,14 @@ def check_solution(params, arc_pixels, lamp_wave, mask=None, data=None, model='l
 
         axes[0].plot(arc_wave, arc_profile)
         axes[0].set_ylabel('Intensity', fontsize=16)
-        for wave in calibrated_wave:
+        if mask is not None:
+            # mark outliers with dotted lines
+            waves = calibrated_wave[~mask]
+            for wave in calibrated_wave[mask]:
+                axes[0].axvline(wave, ls='dotted', alpha=0.2, color='k')
+        else:
+            waves = calibrated_wave
+        for wave in waves:
             axes[0].axvline(wave, ls='--', alpha=0.2, color='k')
         i = 1
     else:
@@ -440,16 +468,18 @@ def check_solution(params, arc_pixels, lamp_wave, mask=None, data=None, model='l
         masked_calibrated_wave = wavelength_function(params, arc_pixels[mask], model)
         ids_lamp, ids_calwave = find_nearest(lamp_wave, masked_calibrated_wave)
         masked_res = masked_calibrated_wave[ids_calwave] - lamp_wave[ids_lamp]
+        n_out = len(calibrated_wave[ids_calwave])
 
         # plot outliers
         axes[i].scatter(masked_calibrated_wave[ids_calwave], arc_pixels[mask][ids_calwave], marker='x', c='b',
-                        label='outliers')
+                        label=f'outliers ({n_out}/{n_all})')
         axes[i].legend(fontsize=14)
         axes[i + 1].scatter(masked_calibrated_wave[ids_calwave], masked_res, marker='x', c='b')
 
     axes[i + 1].axhline(mean, c='k')
     axes[i + 1].axhline(mean + std, c='k', ls='--')
     axes[i + 1].axhline(mean - std, c='k', ls='--')
+    axes[i].set_ylabel(r'Dispersion axis (pixels)', fontsize=16)
     axes[i + 1].set_ylabel(r'Residual ($\AA$)', fontsize=16)
     axes[i + 1].set_xlabel(r'Wavelength ($\AA$)', fontsize=16)
     axes[i + 1].set_ylim(mean - 3 * std, mean + 3 * std)
