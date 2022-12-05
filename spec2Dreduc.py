@@ -11,6 +11,8 @@ import ccdproc
 import warnings
 from astropy.utils.exceptions import AstropyWarning
 
+import logging
+logging.getLogger().setLevel(logging.ERROR)  # not ideal, but ignores annoying warnings
 
 def validate_method(method):
     """Checks the validity of a method for combining images.

@@ -163,12 +163,17 @@ def optimised_trace(data, center=None, amp=None, hwidth=50, t_order=3, sky_width
         profile = np.nanmean(stamp, axis=1)
 
         if center is None or amp is None:
-            peaks = find_peaks(profile, height=np.nanmedian(profile), width=10)[0]
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                peaks = find_peaks(profile, height=np.nanmedian(profile), prominence=50)[0]
             amp = np.max(profile[peaks])
             peak_id = np.argmax(profile[peaks])
             center = peaks[peak_id]
-        guess = (amp, center, 5, np.nanmedian(profile))
-        
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            guess = (amp, center, 5, np.nanmedian(profile))
+
         results = minimize(get_profile_chisq, guess, args=(ys, profile))
         params = results.x
         if params[2] < 20:
@@ -214,14 +219,16 @@ def optimised_trace(data, center=None, amp=None, hwidth=50, t_order=3, sky_width
 
     trace_coef = np.polyfit(cols, ycenter, t_order)
     trace = np.polyval(trace_coef, xs)
-    
-    # trace aperture
-    trace_top = trace+np.median(ywidth)
-    trace_bottom = trace-np.median(ywidth)
-    
-    # sky
-    sky_top = trace+np.median(init_sky)
-    sky_bottom = trace-np.median(init_sky)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        # trace aperture
+        trace_top = trace+np.median(ywidth)
+        trace_bottom = trace-np.median(ywidth)
+
+        # sky
+        sky_top = trace+np.median(init_sky)
+        sky_bottom = trace-np.median(init_sky)
 
     # final diagnostic plots
     if plot_diag:
@@ -289,7 +296,7 @@ def optimised_trace(data, center=None, amp=None, hwidth=50, t_order=3, sky_width
         # with background subtraction + sigma clipping
         slice_data = data[imin:imax,i]
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", AstropyWarning)
+            warnings.simplefilter("ignore", UserWarning)
             mask = ~sigma_clip(slice_data, maxiters=10).mask
             raw_spectrum[i] = np.nansum(slice_data[mask]) - sky 
     
